@@ -37,13 +37,10 @@ echo ""
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-# sRNA BED 完整列: chrom start end sRNA_name sRNA_type sample sample_count DicerCall DicerCall_summary PhaseScore_max PhaseScore_mean PhaseScore_support overlap_TE overlap_TAS
-# 用于 intersect 的精简版 (前3列做坐标匹配)
-# 但保留关键信息列用于最终输出
+# sRNA: chrom start end name type sample sample_count DicerCall PhaseScore_max
 tail -n +2 "$SRNA_BED" | awk 'BEGIN{OFS="\t"} {print $1,$2,$3,$4,$5,$6,$7,$8,$10}' \
     | sort -k1,1 -k2,2n > "${TMP}/srna_full.bed"
 
-# 仅坐标用于计数统计
 awk 'BEGIN{OFS="\t"} {print $1,$2,$3}' "${TMP}/srna_full.bed" > "${TMP}/srna_coord.bed"
 
 SRNA_TOTAL=$(wc -l < "${TMP}/srna_full.bed")
@@ -62,7 +59,7 @@ printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
     "overlap_sRNA" "pct_sRNA" \
     > "$OVERLAP_STATS"
 
-# 大表表头 (首次写入时创建)
+# 大表表头标记
 HEADER_WRITTEN="no"
 
 # =========================
@@ -93,7 +90,7 @@ for MOD in "${MODS[@]}"; do
         echo "  文件: $FNAME"
 
         # =============================================
-        # 获取 DMR 表头 (第一行)
+        # 获取 DMR 表头
         # =============================================
         DMR_HEADER=$(head -1 "$DMR_FILE")
         DMR_NCOLS=$(echo "$DMR_HEADER" | awk -F'\t' '{print NF}')
@@ -101,17 +98,18 @@ for MOD in "${MODS[@]}"; do
 
         # 写大表表头 (只写一次)
         if [ "$HEADER_WRITTEN" = "no" ]; then
-            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
                 "mod_type" "region" \
                 "$DMR_HEADER" \
                 "sRNA_name" "sRNA_type" "sRNA_sample" "sRNA_sample_count" \
                 "sRNA_DicerCall" "sRNA_PhaseScore_max" \
+                "overlap_bp" "overlap_ratio_DMR" "overlap_ratio_sRNA" \
                 > "$OVERLAP_ALL"
             HEADER_WRITTEN="yes"
         fi
 
         # =============================================
-        # DMR 全列排序 (去表头, 保留所有列, 按坐标排序)
+        # DMR 全列排序
         # =============================================
         tail -n +2 "$DMR_FILE" | sort -k1,1 -k2,2n > "${TMP}/dmr_full.tsv"
 
@@ -125,15 +123,13 @@ for MOD in "${MODS[@]}"; do
             continue
         fi
 
-        # DMR 坐标列 (前3列) 用于计数
         awk 'BEGIN{OFS="\t"} {print $1,$2,$3}' "${TMP}/dmr_full.tsv" > "${TMP}/dmr_coord.bed"
 
-        # --- 统计: 多少 DMR 与 sRNA 重叠 ---
+        # --- 统计 ---
         OVERLAP_DMR=$(bedtools intersect \
             -a "${TMP}/dmr_coord.bed" -b "${TMP}/srna_coord.bed" -u | wc -l)
         PCT_DMR=$(awk "BEGIN {printf \"%.2f\", $OVERLAP_DMR/$DMR_COUNT*100}")
 
-        # --- 统计: 多少 sRNA 被 DMR 命中 ---
         OVERLAP_SRNA=$(bedtools intersect \
             -a "${TMP}/srna_coord.bed" -b "${TMP}/dmr_coord.bed" -u | wc -l)
         PCT_SRNA=$(awk "BEGIN {printf \"%.2f\", $OVERLAP_SRNA/$SRNA_TOTAL*100}")
@@ -141,17 +137,13 @@ for MOD in "${MODS[@]}"; do
         echo "  与 sRNA 重叠的 DMR: $OVERLAP_DMR / $DMR_COUNT ($PCT_DMR%)"
         echo "  被 DMR 命中的 sRNA: $OVERLAP_SRNA / $SRNA_TOTAL ($PCT_SRNA%)"
 
-        # 写入统计表
         printf "%s\t%s\t%d\t%d\t%s\t%d\t%s\n" \
             "$MOD" "$REGION" "$DMR_COUNT" "$OVERLAP_DMR" "$PCT_DMR" \
             "$OVERLAP_SRNA" "$PCT_SRNA" \
             >> "$OVERLAP_STATS"
 
         # =============================================
-        # 核心: bedtools intersect 保留 DMR 全部列 + sRNA 信息
-        # -a = DMR 全列文件
-        # -b = sRNA 信息文件 (9列: chrom start end name type sample sample_count DicerCall PhaseScore_max)
-        # -wa -wb 同时输出两侧
+        # bedtools intersect 保留双侧全列
         # =============================================
         bedtools intersect \
             -a "${TMP}/dmr_full.tsv" \
@@ -166,9 +158,11 @@ for MOD in "${MODS[@]}"; do
             continue
         fi
 
-        # 拼接: mod_type + region + DMR全列 + sRNA关键列(name,type,sample,sample_count,DicerCall,PhaseScore_max)
-        # DMR 占 $DMR_NCOLS 列, sRNA 占 9 列 (col DMR_NCOLS+1 到 DMR_NCOLS+9)
-        # sRNA 列: +1=chrom +2=start +3=end +4=name +5=type +6=sample +7=sample_count +8=DicerCall +9=PhaseScore_max
+        # =============================================
+        # 计算 overlap_bp, overlap_ratio_DMR, overlap_ratio_sRNA
+        # DMR: col2=start col3=end
+        # sRNA: col(nc+2)=start col(nc+3)=end
+        # =============================================
         awk -v mod="$MOD" -v reg="$REGION" -v nc="$DMR_NCOLS" '
         BEGIN { OFS="\t" }
         {
@@ -177,6 +171,17 @@ for MOD in "${MODS[@]}"; do
             for (i=1; i<=nc; i++) {
                 dmr = (dmr == "") ? $i : dmr OFS $i
             }
+
+            # DMR 坐标
+            dmr_start = $2 + 0
+            dmr_end   = $3 + 0
+            dmr_len   = dmr_end - dmr_start
+
+            # sRNA 坐标 (在 DMR 列之后)
+            srna_start = $(nc+2) + 0
+            srna_end   = $(nc+3) + 0
+            srna_len   = srna_end - srna_start
+
             # sRNA 关键列
             sname   = $(nc+4)
             stype   = $(nc+5)
@@ -185,7 +190,27 @@ for MOD in "${MODS[@]}"; do
             sdicer  = $(nc+8)
             sphase  = $(nc+9)
 
-            print mod, reg, dmr, sname, stype, ssample, scount, sdicer, sphase
+            # 计算重叠
+            ov_start = (dmr_start > srna_start) ? dmr_start : srna_start
+            ov_end   = (dmr_end < srna_end) ? dmr_end : srna_end
+            ov_bp    = ov_end - ov_start
+            if (ov_bp < 0) ov_bp = 0
+
+            # 重叠比例
+            if (dmr_len > 0) {
+                ratio_dmr = ov_bp / dmr_len
+            } else {
+                ratio_dmr = 0
+            }
+            if (srna_len > 0) {
+                ratio_srna = ov_bp / srna_len
+            } else {
+                ratio_srna = 0
+            }
+
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%.4f\t%.4f\n", \
+                mod, reg, dmr, sname, stype, ssample, scount, sdicer, sphase, \
+                ov_bp, ratio_dmr, ratio_srna
         }
         ' "${TMP}/intersect_raw.tsv" >> "$OVERLAP_ALL"
 
