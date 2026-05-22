@@ -2,30 +2,24 @@
 """
 sRNA_diff_pipeline.py
 =====================
-sRNA 差异表达分析一体化流水线
+sRNA 差异表达分析一体化流水线（支持 SLURM array 并行）
 
 功能:
   1. 读取 all_sRNA.bed，过滤 sample_count >= N 的 sRNA
   2. 根据坐标回到各样本 ShortStack Results.txt，构建 count 矩阵
   3. 自动调用 Rscript 执行 DESeq2 差异分析 + 出图
 
-用法 (直接运行或 sbatch):
-  python3 sRNA_diff_pipeline.py [选项]
+并行模式 (--array):
+  将 sRNA 按 chunk 拆分，每个 SLURM array task 处理一块，
+  最后由 --merge 步骤合并所有 chunk 的 count 矩阵。
 
-  # 或通过 sbatch:
-  sbatch --wrap="python3 /path/to/sRNA_diff_pipeline.py" -p com300 -N1 -n1 \
-         --cpus-per-task=4 --mem=16G -J sRNA_diff
+用法:
+  # 单机全量运行:
+  python3 sRNA_diff_pipeline.py
 
-选项:
-  --workdir   工作目录 (含各样本子目录)
-  --bed       all_sRNA.bed 路径
-  --list      样本列表文件
-  --outdir    输出目录
-  --min-samples  sRNA 最少出现样本数 (默认 2)
-  --rscript   DESeq2 R 脚本路径 (默认: 同目录下 sRNA_deseq2_analysis.R)
-  --skip-r    仅构建 count 矩阵，不运行 R
-
-作者: Kiro
+  # 并行模式 (被 run_sRNA_diff.sh 自动调用):
+  python3 sRNA_diff_pipeline.py --array --task-id 0 --n-tasks 10
+  python3 sRNA_diff_pipeline.py --merge --n-tasks 10
 """
 
 import re
@@ -61,6 +55,17 @@ def parse_args():
                    help='DESeq2 R 脚本路径 (默认: 同目录下 sRNA_deseq2_analysis.R)')
     p.add_argument('--skip-r', action='store_true',
                    help='仅构建 count 矩阵，跳过 DESeq2')
+
+    # 并行模式参数
+    p.add_argument('--array', action='store_true',
+                   help='并行模式: 只处理当前 chunk')
+    p.add_argument('--task-id', type=int, default=None,
+                   help='当前 array task ID (0-based)')
+    p.add_argument('--n-tasks', type=int, default=10,
+                   help='总 array task 数 (默认: 10)')
+    p.add_argument('--merge', action='store_true',
+                   help='合并所有 chunk 的结果')
+
     return p.parse_args()
 
 
@@ -81,10 +86,7 @@ def classify_sample(name):
 
 
 def load_bed(bed_path, min_samples):
-    """
-    读取 all_sRNA.bed，过滤 sample_count >= min_samples。
-    返回 DataFrame: chrom, start, end, sRNA_name, sRNA_type, sample_count
-    """
+    """读取 all_sRNA.bed，过滤 sample_count >= min_samples"""
     records = []
     with open(bed_path) as fh:
         header_line = fh.readline()
@@ -118,9 +120,7 @@ def load_bed(bed_path, min_samples):
 
 
 def load_shortstack_results(results_path):
-    """
-    读取 ShortStack Results.txt -> dict{(chrom, start_0based, end): reads}
-    """
+    """读取 ShortStack Results.txt -> dict{(chrom, start_0based, end): reads}"""
     locus_reads = {}
     with open(results_path) as fh:
         header = fh.readline().rstrip().split(TAB)
@@ -140,7 +140,7 @@ def load_shortstack_results(results_path):
             if not m:
                 continue
             chrom = m.group(1)
-            start = int(m.group(2)) - 1  # 1-based -> 0-based
+            start = int(m.group(2)) - 1
             end = int(m.group(3))
             try:
                 reads = int(float(cols[i_reads]))
@@ -152,11 +152,7 @@ def load_shortstack_results(results_path):
 
 
 def build_count_matrix(srna_df, samples, workdir):
-    """
-    对每个 sRNA 区间，在各样本的 ShortStack Results 中找重叠 locus，
-    将重叠 locus 的 Reads 求和作为该 sRNA 在该样本的表达量。
-    """
-    # 加载所有样本数据
+    """对每个 sRNA 区间，在各样本中找重叠 locus，Reads 求和"""
     print(f'[INFO] 加载 {len(samples)} 个样本的 ShortStack Results ...')
     sample_data = {}
     for s in samples:
@@ -168,7 +164,7 @@ def build_count_matrix(srna_df, samples, workdir):
         sample_data[s] = load_shortstack_results(rpath)
         print(f'  {s}: {len(sample_data[s])} loci')
 
-    # 按 chrom 排序建索引，加速重叠查找
+    # 按 chrom 排序建索引
     print(f'[INFO] 构建 count 矩阵: {len(srna_df)} sRNAs x {len(samples)} samples ...')
     sample_index = {}
     for s in samples:
@@ -179,10 +175,12 @@ def build_count_matrix(srna_df, samples, workdir):
             idx[chrom].sort()
         sample_index[s] = idx
 
-    # 填充矩阵
     mat = pd.DataFrame(0, index=srna_df['sRNA_name'].values, columns=samples, dtype=int)
 
-    for _, row in srna_df.iterrows():
+    total = len(srna_df)
+    for i, (_, row) in enumerate(srna_df.iterrows()):
+        if (i + 1) % 5000 == 0:
+            print(f'  进度: {i+1}/{total} ({100*(i+1)//total}%)')
         q_chrom = row['chrom']
         q_start = row['start']
         q_end = row['end']
@@ -195,7 +193,7 @@ def build_count_matrix(srna_df, samples, workdir):
                 if le <= q_start:
                     continue
                 if ls >= q_end:
-                    break  # 已排序
+                    break
                 total_reads += lr
             mat.at[srna_id, s] = total_reads
 
@@ -203,11 +201,167 @@ def build_count_matrix(srna_df, samples, workdir):
 
 
 # =============================================================================
-# 主流程
+# 并行模式: 处理单个 chunk
 # =============================================================================
-def main():
-    args = parse_args()
+def run_array_task(args):
+    """array 模式: 只处理第 task_id 个 chunk"""
+    workdir = args.workdir
+    bed_path = args.bed or f'{workdir}/all_sRNA.bed'
+    list_file = args.list or f'{workdir}/list'
+    outdir = Path(args.outdir or f'{workdir}/sRNA_diff_analysis')
+    min_samples = args.min_samples
+    task_id = args.task_id
+    n_tasks = args.n_tasks
 
+    # 创建 tmp 目录
+    tmp_dir = outdir / 'tmp_chunks'
+    tmp_dir.mkdir(exist_ok=True, parents=True)
+
+    # 读取样本
+    samples = [ln.strip() for ln in open(list_file) if ln.strip() and not ln.startswith('#')]
+
+    # 加载全部 sRNA
+    srna_df = load_bed(bed_path, min_samples)
+    total_srna = len(srna_df)
+
+    # 计算当前 chunk 的范围
+    chunk_size = (total_srna + n_tasks - 1) // n_tasks
+    start_idx = task_id * chunk_size
+    end_idx = min(start_idx + chunk_size, total_srna)
+
+    if start_idx >= total_srna:
+        print(f'[Task {task_id}] 无需处理 (start_idx={start_idx} >= total={total_srna})')
+        # 写空文件
+        pd.DataFrame(columns=samples).to_csv(tmp_dir / f'chunk_{task_id}.csv')
+        return
+
+    chunk_df = srna_df.iloc[start_idx:end_idx].reset_index(drop=True)
+    print(f'[Task {task_id}/{n_tasks}] 处理 sRNA {start_idx}-{end_idx} (共 {len(chunk_df)} 条)')
+
+    # 构建该 chunk 的 count
+    mat = build_count_matrix(chunk_df, samples, workdir)
+
+    # 保存 chunk
+    out_file = tmp_dir / f'chunk_{task_id}.csv'
+    mat.to_csv(out_file)
+    print(f'[Task {task_id}] 完成，保存: {out_file}')
+
+
+# =============================================================================
+# 合并模式: 合并所有 chunk
+# =============================================================================
+def run_merge(args):
+    """合并所有 chunk 的 count 矩阵，生成最终输出"""
+    workdir = args.workdir
+    bed_path = args.bed or f'{workdir}/all_sRNA.bed'
+    list_file = args.list or f'{workdir}/list'
+    outdir = Path(args.outdir or f'{workdir}/sRNA_diff_analysis')
+    min_samples = args.min_samples
+    n_tasks = args.n_tasks
+    script_dir = Path(__file__).resolve().parent
+    rscript_path = args.rscript or str(script_dir / 'sRNA_deseq2_analysis.R')
+
+    tmp_dir = outdir / 'tmp_chunks'
+
+    # 创建输出目录
+    for sub in ('counts', 'results', 'plots'):
+        (outdir / sub).mkdir(exist_ok=True, parents=True)
+
+    samples = [ln.strip() for ln in open(list_file) if ln.strip() and not ln.startswith('#')]
+
+    print(f'[MERGE] 合并 {n_tasks} 个 chunk ...')
+
+    # 合并所有 chunk
+    chunks = []
+    for i in range(n_tasks):
+        f = tmp_dir / f'chunk_{i}.csv'
+        if not f.exists():
+            print(f'  [WARNING] 缺少: {f}')
+            continue
+        df = pd.read_csv(f, index_col=0)
+        if len(df) > 0:
+            chunks.append(df)
+        print(f'  chunk_{i}: {len(df)} sRNAs')
+
+    if not chunks:
+        sys.exit('[ERROR] 无有效 chunk')
+
+    mat = pd.concat(chunks)
+    mat = mat.astype(int)
+    print(f'[MERGE] 合并后: {len(mat)} sRNAs x {len(mat.columns)} samples')
+
+    # 去除全零行
+    nonzero_mask = mat.sum(axis=1) > 0
+    mat = mat[nonzero_mask]
+    print(f'[MERGE] 去除全零行后: {len(mat)}')
+
+    if len(mat) == 0:
+        sys.exit('[ERROR] count 矩阵全为零')
+
+    # 保存 counts
+    counts_file = outdir / 'counts' / 'sRNA_counts.csv'
+    mat.to_csv(counts_file)
+    print(f'[MERGE] Counts: {counts_file}')
+    print(f'        {mat.shape[0]} sRNAs x {mat.shape[1]} samples, total={int(mat.values.sum())}')
+
+    # 保存 annotation
+    srna_df = load_bed(bed_path, min_samples)
+    srna_df_filtered = srna_df[srna_df['sRNA_name'].isin(mat.index)].reset_index(drop=True)
+    anno_file = outdir / 'counts' / 'sRNA_annotation.csv'
+    srna_df_filtered.to_csv(anno_file, index=False)
+    print(f'[MERGE] Annotation: {anno_file}')
+
+    # 保存 metadata
+    meta = pd.DataFrame({
+        'sample': samples,
+        'group': [classify_sample(s) for s in samples]
+    })
+    meta.set_index('sample', inplace=True)
+    meta_file = outdir / 'counts' / 'sample_metadata.csv'
+    meta.to_csv(meta_file)
+    print(f'[MERGE] 样本分组:')
+    for g, cnt in meta.groupby('group').size().items():
+        print(f'    {g}: {cnt}')
+
+    # RPM
+    lib_size = mat.sum(axis=0).replace(0, np.nan)
+    rpm = mat.div(lib_size, axis=1) * 1e6
+    rpm = rpm.fillna(0)
+    rpm.to_csv(outdir / 'counts' / 'sRNA_rpm.csv')
+
+    # 调用 DESeq2
+    if args.skip_r:
+        print(f'\n[MERGE] 跳过 DESeq2 (--skip-r)')
+        print(f'手动运行: Rscript {rscript_path} {outdir}')
+    else:
+        print(f'\n[MERGE] 运行 DESeq2 ...')
+        if not Path(rscript_path).exists():
+            print(f'  [WARNING] R 脚本不存在: {rscript_path}')
+        else:
+            cmd = ['Rscript', rscript_path, str(outdir)]
+            print(f'  命令: {" ".join(cmd)}')
+            ret = subprocess.run(cmd)
+            if ret.returncode != 0:
+                sys.exit(ret.returncode)
+
+    # 清理 tmp
+    import shutil
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    print(f'[MERGE] 已清理临时文件: {tmp_dir}')
+
+    print('\n' + '=' * 60)
+    print('  流水线完成!')
+    print('=' * 60)
+    print(f'  Counts:  {outdir}/counts/')
+    print(f'  Results: {outdir}/results/')
+    print(f'  Plots:   {outdir}/plots/')
+
+
+# =============================================================================
+# 单机模式（原始逻辑）
+# =============================================================================
+def run_single(args):
+    """单机全量运行"""
     workdir = args.workdir
     bed_path = args.bed or f'{workdir}/all_sRNA.bed'
     list_file = args.list or f'{workdir}/list'
@@ -217,48 +371,39 @@ def main():
     rscript_path = args.rscript or str(script_dir / 'sRNA_deseq2_analysis.R')
 
     print('=' * 60)
-    print('  sRNA 差异表达分析流水线')
+    print('  sRNA 差异表达分析流水线 (单机模式)')
     print('=' * 60)
     print(f'  工作目录:    {workdir}')
     print(f'  BED 文件:    {bed_path}')
-    print(f'  样本列表:    {list_file}')
     print(f'  输出目录:    {outdir}')
     print(f'  最小样本数:  {min_samples}')
-    print(f'  R 脚本:      {rscript_path}')
     print('=' * 60 + '\n')
 
-    # 检查输入
     if not Path(bed_path).exists():
         sys.exit(f'[ERROR] BED 文件不存在: {bed_path}')
     if not Path(list_file).exists():
         sys.exit(f'[ERROR] 样本列表不存在: {list_file}')
 
-    # 创建输出目录
     for sub in ('counts', 'results', 'plots'):
         (outdir / sub).mkdir(exist_ok=True, parents=True)
 
-    # ===== Step 1: 读取样本 =====
     samples = [ln.strip() for ln in open(list_file) if ln.strip() and not ln.startswith('#')]
     print(f'[Step 1] 样本数: {len(samples)}')
 
-    # ===== Step 2: 加载并过滤 BED =====
-    print(f'\n[Step 2] 读取并过滤 BED (sample_count >= {min_samples}) ...')
+    print(f'\n[Step 2] 过滤 BED (sample_count >= {min_samples}) ...')
     srna_df = load_bed(bed_path, min_samples)
     print(f'  保留 sRNA 数: {len(srna_df)}')
 
     if len(srna_df) == 0:
-        sys.exit('[ERROR] 过滤后无 sRNA，请降低 --min-samples')
+        sys.exit('[ERROR] 过滤后无 sRNA')
 
-    # 类型分布
     print('\n  sRNA 类型分布:')
     for t, c in srna_df['sRNA_type'].value_counts().items():
         print(f'    {t}: {c}')
 
-    # ===== Step 3: 构建 count 矩阵 =====
-    print(f'\n[Step 3] 构建表达 count 矩阵 ...')
+    print(f'\n[Step 3] 构建 count 矩阵 ...')
     mat = build_count_matrix(srna_df, samples, workdir)
 
-    # 去除全零行
     nonzero_mask = mat.sum(axis=1) > 0
     n_before = len(mat)
     mat = mat[nonzero_mask]
@@ -266,68 +411,58 @@ def main():
     print(f'\n  去除全零行: {n_before} -> {len(mat)}')
 
     if len(mat) == 0:
-        sys.exit('[ERROR] count 矩阵全为零，请检查坐标体系')
+        sys.exit('[ERROR] count 矩阵全为零')
 
-    # ===== Step 4: 保存输出 =====
     print(f'\n[Step 4] 保存结果 ...')
+    mat.to_csv(outdir / 'counts' / 'sRNA_counts.csv')
+    print(f'  Counts: {mat.shape[0]} x {mat.shape[1]}, total={int(mat.values.sum())}')
 
-    # counts
-    counts_file = outdir / 'counts' / 'sRNA_counts.csv'
-    mat.to_csv(counts_file)
-    print(f'  Counts:     {counts_file}')
-    print(f'              {mat.shape[0]} sRNAs x {mat.shape[1]} samples, total={int(mat.values.sum())}')
+    srna_df_filtered.to_csv(outdir / 'counts' / 'sRNA_annotation.csv', index=False)
 
-    # annotation
-    anno_file = outdir / 'counts' / 'sRNA_annotation.csv'
-    srna_df_filtered.to_csv(anno_file, index=False)
-    print(f'  Annotation: {anno_file}')
-
-    # metadata
-    meta = pd.DataFrame({
-        'sample': samples,
-        'group': [classify_sample(s) for s in samples]
-    })
+    meta = pd.DataFrame({'sample': samples, 'group': [classify_sample(s) for s in samples]})
     meta.set_index('sample', inplace=True)
-    meta_file = outdir / 'counts' / 'sample_metadata.csv'
-    meta.to_csv(meta_file)
-    print(f'  Metadata:   {meta_file}')
-    print(f'\n  样本分组:')
+    meta.to_csv(outdir / 'counts' / 'sample_metadata.csv')
+    print(f'  样本分组:')
     for g, cnt in meta.groupby('group').size().items():
         print(f'    {g}: {cnt}')
 
-    # RPM
     lib_size = mat.sum(axis=0).replace(0, np.nan)
     rpm = mat.div(lib_size, axis=1) * 1e6
-    rpm = rpm.fillna(0)
-    rpm_file = outdir / 'counts' / 'sRNA_rpm.csv'
-    rpm.to_csv(rpm_file)
-    print(f'  RPM:        {rpm_file}')
+    rpm.fillna(0).to_csv(outdir / 'counts' / 'sRNA_rpm.csv')
 
-    # ===== Step 5: 调用 DESeq2 =====
     if args.skip_r:
-        print('\n[Step 5] 跳过 DESeq2 (--skip-r)')
-        print(f'\n手动运行: Rscript {rscript_path} {outdir}')
+        print(f'\n[Step 5] 跳过 DESeq2 (--skip-r)')
+        print(f'手动运行: Rscript {rscript_path} {outdir}')
     else:
-        print(f'\n[Step 5] 运行 DESeq2 差异分析 ...')
+        print(f'\n[Step 5] 运行 DESeq2 ...')
         if not Path(rscript_path).exists():
             print(f'  [WARNING] R 脚本不存在: {rscript_path}')
-            print(f'  请手动运行: Rscript sRNA_deseq2_analysis.R {outdir}')
         else:
             cmd = ['Rscript', rscript_path, str(outdir)]
             print(f'  命令: {" ".join(cmd)}')
             ret = subprocess.run(cmd)
             if ret.returncode != 0:
-                print(f'  [ERROR] Rscript 返回非零: {ret.returncode}', file=sys.stderr)
                 sys.exit(ret.returncode)
 
-    # ===== 完成 =====
     print('\n' + '=' * 60)
     print('  流水线完成!')
     print('=' * 60)
-    print(f'  Counts:  {outdir}/counts/')
-    print(f'  Results: {outdir}/results/')
-    print(f'  Plots:   {outdir}/plots/')
-    print('=' * 60)
+
+
+# =============================================================================
+# 入口
+# =============================================================================
+def main():
+    args = parse_args()
+
+    if args.merge:
+        run_merge(args)
+    elif args.array:
+        if args.task_id is None:
+            sys.exit('[ERROR] --array 模式需要 --task-id 参数')
+        run_array_task(args)
+    else:
+        run_single(args)
 
 
 if __name__ == '__main__':
