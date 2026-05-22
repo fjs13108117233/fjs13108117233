@@ -288,6 +288,13 @@ def run_merge(args):
 
     mat = pd.concat(chunks)
     mat = mat.astype(int)
+
+    # 去除重复索引（chunk 边界可能重叠或 BED 有重复 sRNA_name）
+    if mat.index.duplicated().any():
+        n_dup = mat.index.duplicated().sum()
+        print(f'  [WARNING] 发现 {n_dup} 个重复 sRNA_name，合并重复行 (取 max)')
+        mat = mat.groupby(mat.index).max()
+
     print(f'[MERGE] 合并后: {len(mat)} sRNAs x {len(mat.columns)} samples')
 
     # 去除全零行
