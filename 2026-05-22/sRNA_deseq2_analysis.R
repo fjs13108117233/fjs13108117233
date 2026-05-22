@@ -2,19 +2,20 @@
 # =============================================================================
 # sRNA_deseq2_analysis.R
 # =============================================================================
-# DESeq2 差异分析：所有 sRNA（基于 build_sRNA_counts.py 输出）
+# DESeq2 差异分析（配合 sRNA_diff_pipeline.py 使用）
 #
 # 用法:
 #   Rscript sRNA_deseq2_analysis.R /path/to/sRNA_diff_analysis
+#   (通常由 sRNA_diff_pipeline.py 自动调用)
 #
 # 输入 (在 WORKDIR/counts/ 下):
-#   - sRNA_counts.csv        : count 矩阵 (sRNA x samples)
+#   - sRNA_counts.csv        : count 矩阵
 #   - sample_metadata.csv    : 样本分组
-#   - sRNA_annotation.csv    : sRNA 注释 (类型、坐标等)
+#   - sRNA_annotation.csv    : sRNA 注释
 #
 # 输出:
 #   results/  : DE 结果表 (全部 + 显著)
-#   plots/    : 火山图、PCA、热图、MA 图
+#   plots/    : 火山图、PCA、热图
 # =============================================================================
 
 suppressMessages({
