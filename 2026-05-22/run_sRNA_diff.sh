@@ -16,6 +16,35 @@ mkdir -p logs
 source "$HOME/anaconda3/etc/profile.d/conda.sh"
 conda activate RNA
 
-python3 sRNA_diff_pipeline.py
+# =========================
+# 用户参数
+# =========================
+WORKDIR="/public/home/h14166/fang/Heyufei/smrna_seq"
+TOOLS="${WORKDIR}/tools"
+OUTDIR="${WORKDIR}/sRNA_diff_analysis"
 
-echo "=== 完成: $(date) ==="
+# =========================
+# Step 1: 构建 count 矩阵
+# =========================
+echo ">>> Step 1: 构建 count 矩阵 ..."
+
+python3 ${TOOLS}/sRNA_diff_pipeline.py \
+    --workdir ${WORKDIR} \
+    --bed ${WORKDIR}/all_sRNA.bed \
+    --list ${WORKDIR}/list \
+    --outdir ${OUTDIR} \
+    --min-samples 2 \
+    --rscript ${TOOLS}/sRNA_deseq2_analysis.R \
+    --skip-r
+
+# =========================
+# Step 2: DESeq2 差异分析
+# =========================
+echo ""
+echo ">>> Step 2: DESeq2 差异分析 ..."
+
+Rscript ${TOOLS}/sRNA_deseq2_analysis.R ${OUTDIR}
+
+echo ""
+echo "=== 全部完成: $(date) ==="
+echo "输出目录: ${OUTDIR}"
