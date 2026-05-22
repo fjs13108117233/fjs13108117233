@@ -107,11 +107,16 @@ def load_bed(bed_path, min_samples):
             except (ValueError, IndexError):
                 continue
             if sc >= min_samples:
+                chrom = fields[col_idx['chrom']]
+                start = int(fields[col_idx['start']])
+                end = int(fields[col_idx['end']])
+                # 用坐标作为唯一名称: chrom_start_end
+                srna_name = f'{chrom}_{start}_{end}'
                 records.append({
-                    'chrom': fields[col_idx['chrom']],
-                    'start': int(fields[col_idx['start']]),
-                    'end': int(fields[col_idx['end']]),
-                    'sRNA_name': fields[col_idx['sRNA_name']],
+                    'chrom': chrom,
+                    'start': start,
+                    'end': end,
+                    'sRNA_name': srna_name,
                     'sRNA_type': fields[col_idx['sRNA_type']],
                     'sample_count': sc,
                 })
