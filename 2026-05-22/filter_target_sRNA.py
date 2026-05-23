@@ -71,7 +71,12 @@ def load_de_results(workdir):
     for name, fpath in files.items():
         if not fpath.exists():
             sys.exit(f'[ERROR] 文件不存在: {fpath}')
-        df = pd.read_csv(fpath)
+        df = pd.read_csv(fpath, low_memory=False)
+        # 处理重复的 sRNA_name：保留第一条
+        if df['sRNA_name'].duplicated().any():
+            n_dup = df['sRNA_name'].duplicated().sum()
+            print(f'  [WARNING] {name} 有 {n_dup} 个重复 sRNA_name，保留第一条')
+            df = df.drop_duplicates(subset='sRNA_name', keep='first')
         df = df.set_index('sRNA_name')
         de_data[name] = df
         print(f'  加载 {name}: {len(df)} sRNAs')
@@ -152,7 +157,10 @@ def build_merged_table(target_srnas, de_data, workdir, padj_cutoff, lfc_cutoff):
     # 加载注释信息
     anno_file = Path(workdir) / 'counts' / 'sRNA_annotation.csv'
     if anno_file.exists():
-        anno_df = pd.read_csv(anno_file)
+        anno_df = pd.read_csv(anno_file, low_memory=False)
+        # 处理重复索引
+        if anno_df['sRNA_name'].duplicated().any():
+            anno_df = anno_df.drop_duplicates(subset='sRNA_name', keep='first')
         anno_df = anno_df.set_index('sRNA_name')
     else:
         anno_df = None
@@ -233,10 +241,19 @@ def build_merged_table(target_srnas, de_data, workdir, padj_cutoff, lfc_cutoff):
 # =============================================================================
 # Step 4: GTF 解析 + 邻近基因注释
 # =============================================================================
+def normalize_chrom(chrom):
+    """统一染色体命名: 去除 'chr' 前缀，统一为纯数字/字母"""
+    chrom = str(chrom).strip()
+    if chrom.lower().startswith('chr'):
+        return chrom[3:]
+    return chrom
+
+
 def parse_gtf_genes(gtf_path):
     """
     解析 GTF 文件，提取 gene 记录
     返回: dict[chrom] -> list of (start, end, strand, gene_id, gene_name)
+    注意: chrom 统一去除 'chr' 前缀
     """
     print(f'  解析 GTF: {gtf_path}')
     genes = defaultdict(list)
@@ -252,7 +269,7 @@ def parse_gtf_genes(gtf_path):
             if fields[2] != 'gene':
                 continue
 
-            chrom = fields[0]
+            chrom = normalize_chrom(fields[0])
             start = int(fields[3])  # 1-based
             end = int(fields[4])
             strand = fields[6]
@@ -281,6 +298,9 @@ def parse_gtf_genes(gtf_path):
         genes[chrom].sort(key=lambda x: x[0])
 
     print(f'  共解析 {n_gene} 个基因, 分布于 {len(genes)} 条染色体')
+    # 打印染色体名称样例，方便调试
+    sample_chroms = list(genes.keys())[:5]
+    print(f'  染色体命名样例 (标准化后): {sample_chroms}')
     return genes
 
 
@@ -349,14 +369,20 @@ def annotate_nearest_genes(result_df, gtf_path, max_dist):
     """为每个 sRNA 注释最近基因"""
     genes_dict = parse_gtf_genes(gtf_path)
 
+    # 打印 sRNA 的染色体命名样例
+    srna_chroms = result_df['chrom'].unique()[:5].tolist()
+    print(f'  sRNA 染色体命名样例: {srna_chroms}')
+
     gene_ids = []
     gene_names = []
     distances = []
     directions = []
 
     for _, row in result_df.iterrows():
+        # 统一染色体命名
+        chrom = normalize_chrom(str(row['chrom']))
         g_id, g_name, dist, dirn = find_nearest_gene(
-            row['chrom'], row['start'], row['end'], genes_dict, max_dist
+            chrom, row['start'], row['end'], genes_dict, max_dist
         )
         gene_ids.append(g_id)
         gene_names.append(g_name)
