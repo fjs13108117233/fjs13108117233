@@ -46,7 +46,17 @@ def parse_args():
 # 配置
 # =============================================================================
 
-DMR_MODS = ['4mc', '5hmc', '5mc', '6ma']
+# 修饰类型 -> 实际文件中间标识符
+# 4mc: 4mc_annotated_DMR_afterselect_genic.tsv (无中间字母)
+# 5hmc: 5hmc_H_annotated_DMR_afterselect_genic.tsv
+# 5mc: 5mc_M_annotated_DMR_afterselect_genic.tsv
+# 6ma: 6ma_A_annotated_DMR_afterselect_genic.tsv
+DMR_MODS = {
+    '4mc':  '4mc_annotated_DMR_afterselect_genic.tsv',
+    '5hmc': '5hmc_H_annotated_DMR_afterselect_genic.tsv',
+    '5mc':  '5mc_M_annotated_DMR_afterselect_genic.tsv',
+    '6ma':  '6ma_A_annotated_DMR_afterselect_genic.tsv',
+}
 
 # DMR state 列名 -> 对应 sRNA 组
 # sRNA 趋势: OE1=0(上调), OE2=0(上调), KO6bp=1(下调), KO8bp=1(下调)
@@ -71,9 +81,9 @@ def load_srna(path):
     return df
 
 
-def load_dmr(dmr_dir, mod):
+def load_dmr(dmr_dir, mod, filename):
     """加载某种修饰的 genic DMR"""
-    genic_file = Path(dmr_dir) / mod / f'{mod}_H_annotated_DMR_afterselect_genic.tsv'
+    genic_file = Path(dmr_dir) / mod / filename
     if not genic_file.exists():
         print(f'  [SKIP] 文件不存在: {genic_file}')
         return None
@@ -164,9 +174,9 @@ def main():
     print('\n[2] 逐修饰类型分析 ...')
     results_by_mod = {}  # mod -> DataFrame of consistent genes
 
-    for mod in DMR_MODS:
+    for mod, filename in DMR_MODS.items():
         print(f'\n  --- {mod.upper()} ---')
-        dmr_df = load_dmr(args.dmr_dir, mod)
+        dmr_df = load_dmr(args.dmr_dir, mod, filename)
         if dmr_df is None:
             continue
 
