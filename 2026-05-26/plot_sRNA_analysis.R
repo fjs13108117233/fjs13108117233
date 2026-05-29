@@ -2,17 +2,19 @@
 # =============================================================================
 # plot_sRNA_analysis.R - sRNA × DMR 联合分析可视化 (出版级)
 # =============================================================================
-# 风格: Nature (NPG) 配色 + 25pt 加粗字体 + 清晰边框
+# 风格: Nature (NPG) 配色 + Arial 字体 + 25pt 加粗 + 清晰边框
+#
+# 字体说明:
+#   全部图表统一使用 Arial。PDF 用 cairo_pdf 设备 (标准 pdf 设备不支持
+#   Arial)。若系统无 Arial 字体, cairo 会回退到默认无衬线字体, 或:
+#     conda install -c conda-forge font-ttf-liberation   # Arial 开源替代
+#   也可将下方 FONT 改为 "sans"。
 #
 # 生成图表:
-#   1. sRNA 类型分布柱状图
-#   2. sRNA 染色体分布图
-#   3. sRNA 相对基因位置分布 (upstream/downstream/overlap)
-#   4. sRNA 到基因距离分布直方图
-#   5. 目标 sRNA 表达热图 (RPM, z-score)
-#   6. Venn 图: sRNA 基因 vs DMR 一致基因
-#   7. 候选基因趋势一致性热图 (sRNA + DMR state)
-#   8. 候选基因 sRNA log2FC 趋势图
+#   1. sRNA 类型分布柱状图        2. sRNA 染色体分布图
+#   3. sRNA 相对基因位置分布      4. sRNA 到基因距离分布直方图
+#   5. 目标 sRNA 表达热图         6. Venn 图 (sRNA vs DMR 一致基因)
+#   7. 候选基因趋势一致性热图     8. 候选基因 sRNA log2FC 趋势图
 #
 # 用法:
 #   Rscript plot_sRNA_analysis.R \
@@ -49,35 +51,47 @@ opt <- parse_args(OptionParser(option_list = option_list))
 dir.create(opt$outdir, showWarnings = FALSE, recursive = TRUE)
 
 # =============================================================================
-# 出版级配置: Nature (NPG) 配色 + 25pt 加粗主题
+# 出版级配置: Arial 字体 + Nature (NPG) 配色 + 25pt 加粗主题
 # =============================================================================
+
+FONT <- "Arial"   # 统一字体
 
 # NPG (Nature Publishing Group) 经典配色
 NPG <- c("#E64B35", "#4DBBD5", "#00A087", "#3C5488", "#F39B7F",
          "#8491B4", "#91D1C2", "#DC0000", "#7E6148", "#B09C85")
 
-# 出版级 ggplot 主题: 25pt, 加粗, 清晰边框
+# 出版级 ggplot 主题: Arial, 25pt, 加粗, 清晰边框
 BASE_SIZE <- 25
 theme_pub <- function(base_size = BASE_SIZE) {
-    theme_bw(base_size = base_size) +
+    theme_bw(base_size = base_size, base_family = FONT) +
     theme(
-        text             = element_text(face = "bold", colour = "black"),
-        plot.title       = element_text(face = "bold", size = base_size, hjust = 0.5,
-                                        margin = margin(b = 12)),
-        plot.subtitle    = element_text(face = "bold", size = base_size - 6, hjust = 0.5),
-        axis.title       = element_text(face = "bold", size = base_size),
-        axis.text        = element_text(face = "bold", size = base_size - 4, colour = "black"),
+        text             = element_text(family = FONT, face = "bold", colour = "black"),
+        plot.title       = element_text(family = FONT, face = "bold", size = base_size,
+                                        hjust = 0.5, margin = margin(b = 12)),
+        plot.subtitle    = element_text(family = FONT, face = "bold", size = base_size - 6,
+                                        hjust = 0.5),
+        axis.title       = element_text(family = FONT, face = "bold", size = base_size),
+        axis.text        = element_text(family = FONT, face = "bold", size = base_size - 4,
+                                        colour = "black"),
         axis.ticks       = element_line(colour = "black", linewidth = 1),
         axis.ticks.length = unit(0.25, "cm"),
         panel.border     = element_rect(colour = "black", fill = NA, linewidth = 1.5),
         panel.grid       = element_blank(),
-        legend.title     = element_text(face = "bold", size = base_size - 4),
-        legend.text      = element_text(face = "bold", size = base_size - 6),
+        legend.title     = element_text(family = FONT, face = "bold", size = base_size - 4),
+        legend.text      = element_text(family = FONT, face = "bold", size = base_size - 6),
         legend.key.size  = unit(0.9, "cm"),
         plot.margin      = margin(15, 15, 15, 15)
     )
 }
 LABEL_SIZE <- 8   # geom_text 标签 (≈ 23pt 加粗)
+
+# 统一保存: PDF 用 cairo_pdf (支持 Arial), PNG 300 dpi
+save_plot <- function(base, plot, width, height) {
+    ggsave(file.path(opt$outdir, paste0(base, ".pdf")), plot,
+           width = width, height = height, device = cairo_pdf, limitsize = FALSE)
+    ggsave(file.path(opt$outdir, paste0(base, ".png")), plot,
+           width = width, height = height, dpi = 300, limitsize = FALSE)
+}
 
 MODS <- c("4mc", "5hmc", "5mc", "6ma")
 
@@ -93,15 +107,14 @@ message(">>> [1] sRNA 类型分布 ...")
 p1 <- ggplot(srna, aes(x = reorder(sRNA_type, sRNA_type, length), fill = sRNA_type)) +
     geom_bar(width = 0.7, colour = "black", linewidth = 0.8) +
     geom_text(stat = "count", aes(label = after_stat(count)),
-              hjust = -0.25, size = LABEL_SIZE, fontface = "bold") +
+              hjust = -0.25, size = LABEL_SIZE, fontface = "bold", family = FONT) +
     coord_flip(clip = "off") +
     scale_fill_manual(values = NPG) +
     scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
     labs(title = "Target sRNA Type Distribution", x = NULL, y = "Count") +
     theme_pub() +
     theme(legend.position = "none")
-ggsave(file.path(opt$outdir, "1_sRNA_type_distribution.pdf"), p1, width = 11, height = 7)
-ggsave(file.path(opt$outdir, "1_sRNA_type_distribution.png"), p1, width = 11, height = 7, dpi = 300)
+save_plot("1_sRNA_type_distribution", p1, 11, 7)
 
 # =============================================================================
 # 图2: 染色体分布
@@ -115,8 +128,7 @@ p2 <- ggplot(srna, aes(x = chrom, fill = sRNA_type)) +
     labs(title = "Target sRNA Chromosome Distribution",
          x = "Chromosome", y = "Count", fill = "sRNA Type") +
     theme_pub()
-ggsave(file.path(opt$outdir, "2_chromosome_distribution.pdf"), p2, width = 13, height = 7)
-ggsave(file.path(opt$outdir, "2_chromosome_distribution.png"), p2, width = 13, height = 7, dpi = 300)
+save_plot("2_chromosome_distribution", p2, 13, 7)
 
 # =============================================================================
 # 图3: 相对基因位置分布
@@ -127,7 +139,7 @@ if (nrow(srna_anno) > 0) {
     p3 <- ggplot(srna_anno, aes(x = gene_direction, fill = gene_direction)) +
         geom_bar(width = 0.7, colour = "black", linewidth = 0.8) +
         geom_text(stat = "count", aes(label = after_stat(count)),
-                  vjust = -0.4, size = LABEL_SIZE, fontface = "bold") +
+                  vjust = -0.4, size = LABEL_SIZE, fontface = "bold", family = FONT) +
         scale_fill_manual(values = c(upstream = "#3C5488", downstream = "#E64B35",
                                      overlap = "#00A087")) +
         scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
@@ -135,8 +147,7 @@ if (nrow(srna_anno) > 0) {
              x = NULL, y = "Count") +
         theme_pub() +
         theme(legend.position = "none")
-    ggsave(file.path(opt$outdir, "3_gene_direction.pdf"), p3, width = 9, height = 7)
-    ggsave(file.path(opt$outdir, "3_gene_direction.png"), p3, width = 9, height = 7, dpi = 300)
+    save_plot("3_gene_direction", p3, 9, 7)
 }
 
 # =============================================================================
@@ -153,8 +164,7 @@ if (nrow(srna_dist) > 0) {
         labs(title = "Distance from sRNA to Nearest Gene",
              x = "Distance (bp)", y = "Count") +
         theme_pub()
-    ggsave(file.path(opt$outdir, "4_distance_distribution.pdf"), p4, width = 11, height = 7)
-    ggsave(file.path(opt$outdir, "4_distance_distribution.png"), p4, width = 11, height = 7, dpi = 300)
+    save_plot("4_distance_distribution", p4, 11, 7)
 }
 
 # =============================================================================
@@ -176,16 +186,15 @@ if (file.exists(opt$rpm) && file.exists(opt$meta)) {
 
         anno_col <- data.frame(Group = meta[colnames(mat), "group"],
                                row.names = colnames(mat))
-        # NPG 配色映射给分组
         grp_levels <- unique(anno_col$Group)
         anno_colors <- list(Group = setNames(NPG[seq_along(grp_levels)], grp_levels))
 
-        # NPG 风格红蓝渐变
         hm_color <- colorRampPalette(c("#3C5488", "#4DBBD5", "white", "#F39B7F", "#E64B35"))(100)
 
-        # 加粗字体: 通过 gpar 全局设置
-        pdf(file.path(opt$outdir, "5_target_sRNA_heatmap.pdf"),
-            width = 11, height = min(24, 5 + length(target_ids) * 0.14))
+        # cairo_pdf(family=Arial): pheatmap 文字继承该字体
+        cairo_pdf(file.path(opt$outdir, "5_target_sRNA_heatmap.pdf"),
+                  width = 11, height = min(24, 5 + length(target_ids) * 0.14),
+                  family = FONT)
         pheatmap(mat_z,
                  annotation_col = anno_col,
                  annotation_colors = anno_colors,
@@ -230,28 +239,28 @@ if (file.exists(opt$intersect)) {
             imagetype = "png", height = 2400, width = 2400, resolution = 300,
             fill = venn_cols, alpha = 0.55,
             col = "black", lwd = 3,
-            cex = 2.2, fontface = "bold", fontfamily = "sans",
-            cat.cex = 2.2, cat.fontface = "bold", cat.fontfamily = "sans",
+            cex = 2.2, fontface = "bold", fontfamily = FONT,
+            cat.cex = 2.2, cat.fontface = "bold", cat.fontfamily = FONT,
             main = "sRNA genes vs DMR-consistent genes",
-            main.cex = 2.2, main.fontface = "bold"
+            main.cex = 2.2, main.fontface = "bold", main.fontfamily = FONT
         )
     } else {
         df_bar <- data.frame(Set = names(mod_gene_list), N = sapply(mod_gene_list, length))
         p6 <- ggplot(df_bar, aes(x = reorder(Set, -N), y = N, fill = Set)) +
             geom_col(width = 0.7, colour = "black", linewidth = 0.8) +
-            geom_text(aes(label = N), vjust = -0.4, size = LABEL_SIZE, fontface = "bold") +
+            geom_text(aes(label = N), vjust = -0.4, size = LABEL_SIZE, fontface = "bold",
+                      family = FONT) +
             scale_fill_manual(values = NPG) +
             scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
             labs(title = "Gene Counts: sRNA vs DMR-consistent", x = NULL, y = "Gene Count") +
             theme_pub() + theme(legend.position = "none")
-        ggsave(file.path(opt$outdir, "6_gene_counts_bar.pdf"), p6, width = 10, height = 7)
-        ggsave(file.path(opt$outdir, "6_gene_counts_bar.png"), p6, width = 10, height = 7, dpi = 300)
-        message("  [INFO] 未安装 VennDiagram, 改用柱状图。安装: install.packages('VennDiagram')")
+        save_plot("6_gene_counts_bar", p6, 10, 7)
+        message("  [INFO] 未安装 VennDiagram, 改用柱状图。安装: conda install -c conda-forge r-venndiagram")
     }
 }
 
 # =============================================================================
-# 图7: 候选基因趋势一致性热图 (ggplot geom_tile, 出版级 25pt 加粗)
+# 图7: 候选基因趋势一致性热图 (ggplot geom_tile, 出版级)
 # =============================================================================
 message(">>> [7] 候选基因趋势热图 ...")
 if (file.exists(opt$consistent)) {
@@ -264,15 +273,12 @@ if (file.exists(opt$consistent)) {
         all_state_cols <- c(srna_state_cols, dmr_state_cols)
         all_state_cols <- all_state_cols[all_state_cols %in% colnames(cons)]
 
-        # 列重命名: sRNA_OE1 / 5mc_OE1 ...
         col_labels <- gsub("_state", "", all_state_cols)
         is_srna <- col_labels %in% c("OE1", "OE2", "KO6bp", "KO8bp")
         col_labels[is_srna] <- paste0("sRNA_", col_labels[is_srna])
 
-        # 行标签
         row_labels <- paste0(cons$nearest_gene_id, "\n(", cons$sRNA_type, ")")
 
-        # 转长表
         hm_df <- data.frame()
         for (j in seq_along(all_state_cols)) {
             vals <- cons[[all_state_cols[j]]]
@@ -280,25 +286,21 @@ if (file.exists(opt$consistent)) {
             hm_df <- rbind(hm_df, data.frame(
                 gene  = row_labels,
                 group = col_labels[j],
-                state = as.integer(vals),
-                row_i = seq_len(nrow(cons)),
-                col_j = j
+                state = as.integer(vals)
             ))
         }
-        # state -> 标签
         hm_df$state_label <- factor(hm_df$state, levels = c(0, 1, 3),
                                     labels = c("Up/Hyper", "Down/Hypo", "NS"))
         hm_df$group <- factor(hm_df$group, levels = col_labels)
         hm_df$gene  <- factor(hm_df$gene, levels = rev(unique(row_labels)))
         hm_df$num   <- hm_df$state
 
-        # NPG: up/hyper=红, down/hypo=深蓝, NS=灰
         state_cols <- c("Up/Hyper" = "#E64B35", "Down/Hypo" = "#3C5488", "NS" = "#B0B0B0")
 
         p7 <- ggplot(hm_df, aes(x = group, y = gene, fill = state_label)) +
             geom_tile(colour = "white", linewidth = 1.5) +
             geom_text(aes(label = num), size = LABEL_SIZE - 1, fontface = "bold",
-                      colour = "white") +
+                      family = FONT, colour = "white") +
             scale_fill_manual(values = state_cols, name = "State") +
             scale_x_discrete(position = "top", expand = c(0, 0)) +
             scale_y_discrete(expand = c(0, 0)) +
@@ -308,16 +310,13 @@ if (file.exists(opt$consistent)) {
             coord_equal() +
             theme_pub() +
             theme(
-                axis.text.x  = element_text(angle = 45, hjust = 0, face = "bold"),
+                axis.text.x  = element_text(angle = 45, hjust = 0, face = "bold", family = FONT),
                 panel.border = element_rect(colour = "black", fill = NA, linewidth = 1.5),
                 axis.ticks   = element_blank()
             )
         n_row <- length(unique(row_labels))
         n_col <- length(all_state_cols)
-        ggsave(file.path(opt$outdir, "7_candidate_trend_heatmap.pdf"),
-               p7, width = 3 + n_col * 1.6, height = 3 + n_row * 1.3, limitsize = FALSE)
-        ggsave(file.path(opt$outdir, "7_candidate_trend_heatmap.png"),
-               p7, width = 3 + n_col * 1.6, height = 3 + n_row * 1.3, dpi = 300, limitsize = FALSE)
+        save_plot("7_candidate_trend_heatmap", p7, 3 + n_col * 1.6, 3 + n_row * 1.3)
         message("  候选基因行数: ", nrow(cons))
     }
 }
@@ -349,13 +348,12 @@ if (file.exists(opt$consistent)) {
             labs(title = "Candidate sRNA log2FC across Groups",
                  x = "Group (vs WT)", y = "sRNA log2FoldChange", colour = "sRNA") +
             theme_pub() +
-            theme(legend.text = element_text(size = BASE_SIZE - 9))
-        ggsave(file.path(opt$outdir, "8_candidate_log2FC_trend.pdf"), p8, width = 12, height = 7.5)
-        ggsave(file.path(opt$outdir, "8_candidate_log2FC_trend.png"), p8, width = 12, height = 7.5, dpi = 300)
+            theme(legend.text = element_text(size = BASE_SIZE - 9, family = FONT))
+        save_plot("8_candidate_log2FC_trend", p8, 12, 7.5)
     }
 }
 
-message("\n=== 绘图完成 (出版级: NPG配色 + 25pt加粗) ===")
+message("\n=== 绘图完成 (出版级: Arial + NPG配色 + 25pt加粗) ===")
 message("输出目录: ", opt$outdir)
 message("  1_sRNA_type_distribution    2_chromosome_distribution")
 message("  3_gene_direction            4_distance_distribution")
