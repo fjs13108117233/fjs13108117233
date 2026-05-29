@@ -183,8 +183,9 @@ if (file.exists(opt$rpm) && file.exists(opt$meta)) {
         # NPG 风格红蓝渐变
         hm_color <- colorRampPalette(c("#3C5488", "#4DBBD5", "white", "#F39B7F", "#E64B35"))(100)
 
+        # 加粗字体: 通过 gpar 全局设置
         pdf(file.path(opt$outdir, "5_target_sRNA_heatmap.pdf"),
-            width = 10, height = min(22, 5 + length(target_ids) * 0.13))
+            width = 11, height = min(24, 5 + length(target_ids) * 0.14))
         pheatmap(mat_z,
                  annotation_col = anno_col,
                  annotation_colors = anno_colors,
@@ -193,8 +194,9 @@ if (file.exists(opt$rpm) && file.exists(opt$meta)) {
                  color = hm_color,
                  border_color = NA,
                  main = paste0("Target sRNA Expression (z-score, n=", length(target_ids), ")"),
-                 fontsize = 16, fontsize_row = 9, fontsize_col = 14,
-                 fontface = 2)
+                 fontsize = 18, fontsize_row = 10, fontsize_col = 16,
+                 treeheight_row = 40, treeheight_col = 30,
+                 angle_col = 45)
         dev.off()
     }
 }
@@ -249,7 +251,7 @@ if (file.exists(opt$intersect)) {
 }
 
 # =============================================================================
-# 图7: 候选基因趋势一致性热图
+# 图7: 候选基因趋势一致性热图 (ggplot geom_tile, 出版级 25pt 加粗)
 # =============================================================================
 message(">>> [7] 候选基因趋势热图 ...")
 if (file.exists(opt$consistent)) {
@@ -262,29 +264,61 @@ if (file.exists(opt$consistent)) {
         all_state_cols <- c(srna_state_cols, dmr_state_cols)
         all_state_cols <- all_state_cols[all_state_cols %in% colnames(cons)]
 
-        state_mat <- as.matrix(cons[, all_state_cols, drop = FALSE])
-        rownames(state_mat) <- paste0(cons$nearest_gene_id, " (", cons$sRNA_type, ")")
-        colnames(state_mat) <- gsub("_state", "", colnames(state_mat))
-        is_srna <- colnames(state_mat) %in% c("OE1", "OE2", "KO6bp", "KO8bp")
-        colnames(state_mat)[is_srna] <- paste0("sRNA_", colnames(state_mat)[is_srna])
-        state_mat[is.na(state_mat)] <- 3
+        # 列重命名: sRNA_OE1 / 5mc_OE1 ...
+        col_labels <- gsub("_state", "", all_state_cols)
+        is_srna <- col_labels %in% c("OE1", "OE2", "KO6bp", "KO8bp")
+        col_labels[is_srna] <- paste0("sRNA_", col_labels[is_srna])
 
-        # NPG: up/hyper=红, down/hypo=蓝, NS=灰
-        pdf(file.path(opt$outdir, "7_candidate_trend_heatmap.pdf"),
-            width = 12, height = max(4, nrow(state_mat) * 0.8 + 2))
-        pheatmap(state_mat,
-                 cluster_rows = FALSE, cluster_cols = FALSE,
-                 display_numbers = TRUE, number_format = "%.0f",
-                 number_color = "black", fontsize_number = 16,
-                 color = c("#E64B35", "#3C5488", "#B0B0B0"),
-                 breaks = c(-0.5, 0.5, 1.5, 3.5),
-                 border_color = "white",
-                 main = "Candidate Genes: sRNA & DMR State\n(0=up/hyper, 1=down/hypo, 3=NS)",
-                 fontsize = 17, fontsize_row = 14, fontsize_col = 15,
-                 fontface = 2, cellwidth = 50, cellheight = 40,
-                 legend = FALSE)
-        dev.off()
-        message("  候选基因行数: ", nrow(state_mat))
+        # 行标签
+        row_labels <- paste0(cons$nearest_gene_id, "\n(", cons$sRNA_type, ")")
+
+        # 转长表
+        hm_df <- data.frame()
+        for (j in seq_along(all_state_cols)) {
+            vals <- cons[[all_state_cols[j]]]
+            vals[is.na(vals)] <- 3
+            hm_df <- rbind(hm_df, data.frame(
+                gene  = row_labels,
+                group = col_labels[j],
+                state = as.integer(vals),
+                row_i = seq_len(nrow(cons)),
+                col_j = j
+            ))
+        }
+        # state -> 标签
+        hm_df$state_label <- factor(hm_df$state, levels = c(0, 1, 3),
+                                    labels = c("Up/Hyper", "Down/Hypo", "NS"))
+        hm_df$group <- factor(hm_df$group, levels = col_labels)
+        hm_df$gene  <- factor(hm_df$gene, levels = rev(unique(row_labels)))
+        hm_df$num   <- hm_df$state
+
+        # NPG: up/hyper=红, down/hypo=深蓝, NS=灰
+        state_cols <- c("Up/Hyper" = "#E64B35", "Down/Hypo" = "#3C5488", "NS" = "#B0B0B0")
+
+        p7 <- ggplot(hm_df, aes(x = group, y = gene, fill = state_label)) +
+            geom_tile(colour = "white", linewidth = 1.5) +
+            geom_text(aes(label = num), size = LABEL_SIZE - 1, fontface = "bold",
+                      colour = "white") +
+            scale_fill_manual(values = state_cols, name = "State") +
+            scale_x_discrete(position = "top", expand = c(0, 0)) +
+            scale_y_discrete(expand = c(0, 0)) +
+            labs(title = "Candidate Genes: sRNA & DMR State",
+                 subtitle = "0 = Up/Hyper, 1 = Down/Hypo, 3 = NS",
+                 x = NULL, y = NULL) +
+            coord_equal() +
+            theme_pub() +
+            theme(
+                axis.text.x  = element_text(angle = 45, hjust = 0, face = "bold"),
+                panel.border = element_rect(colour = "black", fill = NA, linewidth = 1.5),
+                axis.ticks   = element_blank()
+            )
+        n_row <- length(unique(row_labels))
+        n_col <- length(all_state_cols)
+        ggsave(file.path(opt$outdir, "7_candidate_trend_heatmap.pdf"),
+               p7, width = 3 + n_col * 1.6, height = 3 + n_row * 1.3, limitsize = FALSE)
+        ggsave(file.path(opt$outdir, "7_candidate_trend_heatmap.png"),
+               p7, width = 3 + n_col * 1.6, height = 3 + n_row * 1.3, dpi = 300, limitsize = FALSE)
+        message("  候选基因行数: ", nrow(cons))
     }
 }
 
