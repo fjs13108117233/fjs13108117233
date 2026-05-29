@@ -1,0 +1,87 @@
+// =============================================================================
+// sRNA_decision_tree.dot - sRNA 分类决策树流程图 (PPT 用)
+// =============================================================================
+// 渲染命令 (需要 graphviz, conda install -c conda-forge graphviz):
+//   dot -Tsvg sRNA_decision_tree.dot -o sRNA_decision_tree.svg   # PPT 矢量(推荐)
+//   dot -Tpng -Gdpi=300 sRNA_decision_tree.dot -o sRNA_decision_tree.png
+//   dot -Tpdf sRNA_decision_tree.dot -o sRNA_decision_tree.pdf
+//
+// 配色: Nature (NPG)。判断=菱形浅灰, 结果=圆角矩形 NPG 配色。
+// =============================================================================
+
+digraph sRNA_classification {
+    rankdir = TB;
+    bgcolor = "white";
+    splines = ortho;
+    nodesep = 0.45;
+    ranksep = 0.55;
+
+    // 全局节点样式: Arial 加粗
+    node [fontname = "Arial Bold", fontsize = 20, style = "filled,rounded",
+          shape = box, penwidth = 2, color = "#333333"];
+    edge [fontname = "Arial Bold", fontsize = 16, penwidth = 2, color = "#333333"];
+
+    // ---- 起点 ----
+    start [label = "Merged sRNA locus\n(ShortStack Results)",
+           shape = box, fillcolor = "#3C5488", fontcolor = "white", penwidth = 2.5];
+
+    // ---- 判断节点 (菱形, 浅灰) ----
+    node [shape = diamond, fillcolor = "#ECECEC", fontcolor = "#222222"];
+    q1 [label = "Overlaps known\nmiRNA (GFF3)?"];
+    q2 [label = "21/22 nt +\nphased + TAS?"];
+    q3 [label = "21/22 nt +\nphased?"];
+    q4 [label = "24 nt + phased\n(score > 2.0)?"];
+    q5 [label = "21/22 nt +\nTE + non-phased?"];
+    q6 [label = "24 nt +\nnon-phased?"];
+    q7 [label = "ShortStack\nMIRNA = Y?"];
+    q8 [label = "DicerCall\n= 21/22/23 nt?"];
+
+    // ---- 结果节点 (圆角矩形, NPG 配色) ----
+    node [shape = box, style = "filled,rounded", fontcolor = "white", penwidth = 2];
+    r_mirna   [label = "miRNA\n(known)",        fillcolor = "#E64B35"];
+    r_tas     [label = "tasiRNA",               fillcolor = "#4DBBD5"];
+    r_pha21   [label = "21-nt phasiRNA",        fillcolor = "#00A087"];
+    r_pha24   [label = "24-nt phasiRNA",        fillcolor = "#3C5488"];
+    r_eas     [label = "easiRNA",               fillcolor = "#F39B7F"];
+    r_hc      [label = "hc-siRNA",              fillcolor = "#8491B4"];
+    r_novel   [label = "novel miRNA",           fillcolor = "#91D1C2", fontcolor = "#222222"];
+    r_nt      [label = "21/22/23-nt siRNA",     fillcolor = "#7E6148"];
+    r_other   [label = "other-sRNA",            fillcolor = "#B09C85", fontcolor = "#222222"];
+
+    // ---- 决策流 (Yes 向右出结果, No 向下继续) ----
+    start -> q1;
+
+    q1 -> r_mirna [label = " Yes", color = "#E64B35", fontcolor = "#E64B35"];
+    q1 -> q2      [label = " No"];
+
+    q2 -> r_tas   [label = " Yes", color = "#4DBBD5", fontcolor = "#1A6E80"];
+    q2 -> q3      [label = " No"];
+
+    q3 -> r_pha21 [label = " Yes", color = "#00A087", fontcolor = "#00A087"];
+    q3 -> q4      [label = " No"];
+
+    q4 -> r_pha24 [label = " Yes", color = "#3C5488", fontcolor = "#3C5488"];
+    q4 -> q5      [label = " No"];
+
+    q5 -> r_eas   [label = " Yes", color = "#E8853F", fontcolor = "#E8853F"];
+    q5 -> q6      [label = " No"];
+
+    q6 -> r_hc    [label = " Yes", color = "#8491B4", fontcolor = "#5B6486"];
+    q6 -> q7      [label = " No"];
+
+    q7 -> r_novel [label = " Yes", color = "#3B8C7A", fontcolor = "#3B8C7A"];
+    q7 -> q8      [label = " No"];
+
+    q8 -> r_nt    [label = " Yes", color = "#7E6148", fontcolor = "#7E6148"];
+    q8 -> r_other [label = " No"];
+
+    // ---- 同层对齐 (结果节点与对应判断节点同行) ----
+    { rank = same; q1; r_mirna; }
+    { rank = same; q2; r_tas; }
+    { rank = same; q3; r_pha21; }
+    { rank = same; q4; r_pha24; }
+    { rank = same; q5; r_eas; }
+    { rank = same; q6; r_hc; }
+    { rank = same; q7; r_novel; }
+    { rank = same; q8; r_nt; r_other; }
+}
